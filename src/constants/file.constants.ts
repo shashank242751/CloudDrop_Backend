@@ -21,3 +21,4 @@ export const APP_CONSTANTS = {
   DEFAULT_S3_BUCKET: 'clouddrop-storage-demo',
   DEFAULT_DYNAMODB_TABLE: 'CloudDropFiles',
 } as const;
+

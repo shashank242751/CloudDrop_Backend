@@ -8,7 +8,7 @@ on:
 
 jobs:
   test-and-build:
-    name: Build & Test NestJS Application
+    name: Run Unit Tests & Build NestJS Application
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Code
@@ -22,6 +22,12 @@ jobs:
 
       - name: Install Dependencies
         run: npm ci
+
+      # ========================================================================
+      # AUTOMATED FUNCTIONALITY & BUSINESS LOGIC TESTING
+      # ========================================================================
+      - name: Run Automated Test Cases (Jest)
+        run: npm test
 
       - name: Build Application
         run: npm run build
@@ -69,4 +75,3 @@ jobs:
           else
             echo "Skipping AWS validation: AWS secrets not yet configured."
           fi
-
