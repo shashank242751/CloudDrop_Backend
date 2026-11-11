@@ -30,3 +30,4 @@ chmod +x infra/scripts/teardown.sh
 1. **Empties the S3 bucket**: CloudFormation cannot delete an S3 bucket with files in it. The script purges all objects first.
 2. **Deletes the CloudFormation stack**: Terminates the EC2 instances, destroys the ASG, deletes the NLB, removes the DynamoDB table, deletes the Lambda function, and removes the IAM roles.
 3. Leaves **zero lingering resources** in your AWS account!
+

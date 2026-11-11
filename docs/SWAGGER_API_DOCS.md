@@ -115,3 +115,4 @@ http://<HOST>/api/docs
   "timestamp": "2026-11-11T06:00:00.000Z"
 }
 ```
+

@@ -114,3 +114,4 @@
 ### 11. AWS IAM & CloudFormation
 - **IAM Instance Profile**: Allows EC2 to call S3 and DynamoDB without hardcoding AWS access keys.
 - **CloudFormation**: 100% of the above resources are declared in `infra/cloudformation/clouddrop-infra.yaml`.
+

@@ -135,3 +135,4 @@ Response returns `{ fileId, downloadUrl, downloadCount: 1 }`.
    - NLB marks the instance unhealthy.
    - ASG detects the termination.
    - ASG automatically spins up a new EC2 instance using the Launch Template and User-Data script!
+
