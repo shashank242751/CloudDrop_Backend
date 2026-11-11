@@ -2,15 +2,17 @@ import { NestFactory } from '@nestjs/core';
 import { ValidationPipe } from '@nestjs/common';
 import { SwaggerModule, DocumentBuilder } from '@nestjs/swagger';
 import { AppModule } from './app.module';
+import { AppConfigService } from './config';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
+  const appConfig = app.get(AppConfigService);
 
-  // Enable CORS for frontend web client
+  // Configure CORS using centralized config
   app.enableCors({
-    origin: '*',
+    origin: appConfig.corsOrigins,
     methods: 'GET,HEAD,PUT,PATCH,POST,DELETE,OPTIONS',
-    credentials: true,
+    credentials: appConfig.corsCredentials,
   });
 
   // Global validation pipe
@@ -40,11 +42,11 @@ async function bootstrap() {
     },
   });
 
-  const port = process.env.PORT || 3000;
+  const port = appConfig.port;
   await app.listen(port);
-  console.log(`CloudDrop Backend running on port ${port}`);
+  console.log(`CloudDrop Backend running in [${appConfig.nodeEnv}] mode on port ${port}`);
+  console.log(`Allowed CORS origins: ${JSON.stringify(appConfig.corsOrigins)}`);
   console.log(`Swagger documentation available at http://localhost:${port}/api/docs`);
 }
 
 bootstrap();
-

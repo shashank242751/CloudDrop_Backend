@@ -1,5 +1,6 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { IsString, IsNotEmpty, IsNumber, Min, IsOptional, Max } from 'class-validator';
+import { FILE_CONSTANTS } from '../../constants';
 
 export class CreateUploadDto {
   @ApiProperty({
@@ -24,17 +25,18 @@ export class CreateUploadDto {
   })
   @IsNumber()
   @Min(1)
+  @Max(FILE_CONSTANTS.MAX_FILE_SIZE_BYTES)
   sizeBytes: number;
 
   @ApiPropertyOptional({
     description: 'Hours until file expires (sets DynamoDB TTL). Default is 24 hours.',
     example: 24,
-    default: 24,
+    default: FILE_CONSTANTS.DEFAULT_EXPIRY_HOURS,
   })
   @IsOptional()
   @IsNumber()
-  @Min(1)
-  @Max(168) // Max 7 days
+  @Min(FILE_CONSTANTS.MIN_EXPIRY_HOURS)
+  @Max(FILE_CONSTANTS.MAX_EXPIRY_HOURS)
   expiryHours?: number;
 
   @ApiPropertyOptional({
@@ -44,4 +46,3 @@ export class CreateUploadDto {
   @IsOptional()
   tags?: string[];
 }
-

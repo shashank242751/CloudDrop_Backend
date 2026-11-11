@@ -2,6 +2,8 @@ import { Injectable, NotFoundException, BadRequestException, Logger } from '@nes
 import { v4 as uuidv4 } from 'uuid';
 import { AwsService, FileRecord } from '../aws/aws.service';
 import { CreateUploadDto } from './dto/create-upload.dto';
+import { FileStatus, FILE_CONSTANTS } from '../constants';
+import { buildS3Key, calculateTtlEpochSeconds, isExpired } from '../utils';
 
 @Injectable()
 export class FilesService {
@@ -11,15 +13,15 @@ export class FilesService {
 
   async requestUpload(dto: CreateUploadDto) {
     const fileId = uuidv4();
-    const sanitizedFileName = dto.fileName.replace(/[^a-zA-Z0-9._-]/g, '_');
-    const s3Key = `uploads/${fileId}/${sanitizedFileName}`;
-
-    const expiryHours = dto.expiryHours || 24;
-    const nowSeconds = Math.floor(Date.now() / 1000);
-    const ttlSeconds = nowSeconds + expiryHours * 3600;
+    const s3Key = buildS3Key(fileId, dto.fileName);
+    const ttlSeconds = calculateTtlEpochSeconds(dto.expiryHours || FILE_CONSTANTS.DEFAULT_EXPIRY_HOURS);
 
     // 1. Generate pre-signed PUT URL (valid for 15 minutes)
-    const uploadUrl = await this.awsService.generatePresignedUploadUrl(s3Key, dto.mimeType, 900);
+    const uploadUrl = await this.awsService.generatePresignedUploadUrl(
+      s3Key,
+      dto.mimeType,
+      FILE_CONSTANTS.PRESIGNED_UPLOAD_EXPIRY_SECONDS,
+    );
 
     // 2. Register metadata record in DynamoDB with PENDING status
     const record: FileRecord = {
@@ -28,7 +30,7 @@ export class FilesService {
       s3Key,
       mimeType: dto.mimeType,
       sizeBytes: dto.sizeBytes,
-      status: 'PENDING',
+      status: FileStatus.PENDING,
       uploadedAt: new Date().toISOString(),
       expiresAt: ttlSeconds,
       downloadCount: 0,
@@ -52,12 +54,12 @@ export class FilesService {
       throw new NotFoundException(`File record ${fileId} not found`);
     }
 
-    // Set status to READY (or PROCESSING until Lambda confirms)
-    await this.awsService.updateFileStatus(fileId, 'READY');
+    // Mark status as READY once client confirms upload
+    await this.awsService.updateFileStatus(fileId, FileStatus.READY);
     return {
       message: 'File upload confirmed successfully',
       fileId,
-      status: 'READY',
+      status: FileStatus.READY,
     };
   }
 
@@ -71,8 +73,7 @@ export class FilesService {
       throw new NotFoundException(`File with ID ${fileId} not found`);
     }
 
-    const nowSeconds = Math.floor(Date.now() / 1000);
-    if (record.expiresAt && record.expiresAt < nowSeconds) {
+    if (isExpired(record.expiresAt)) {
       throw new BadRequestException('This file transfer has expired');
     }
 
@@ -89,7 +90,7 @@ export class FilesService {
     const downloadUrl = await this.awsService.generatePresignedDownloadUrl(
       record.s3Key,
       record.originalName,
-      300,
+      FILE_CONSTANTS.PRESIGNED_DOWNLOAD_EXPIRY_SECONDS,
     );
 
     return {
@@ -97,7 +98,7 @@ export class FilesService {
       originalName: record.originalName,
       downloadUrl,
       downloadCount: newCount,
-      expiresInSeconds: 300,
+      expiresInSeconds: FILE_CONSTANTS.PRESIGNED_DOWNLOAD_EXPIRY_SECONDS,
     };
   }
 
@@ -113,4 +114,3 @@ export class FilesService {
     };
   }
 }
-

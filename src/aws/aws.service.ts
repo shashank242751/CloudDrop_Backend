@@ -1,5 +1,4 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
 import { S3Client, PutObjectCommand, GetObjectCommand, DeleteObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
@@ -11,6 +10,8 @@ import {
   UpdateCommand,
   DeleteCommand,
 } from '@aws-sdk/lib-dynamodb';
+import { AppConfigService } from '../config';
+import { FileStatus, FILE_CONSTANTS } from '../constants';
 
 export interface FileRecord {
   fileId: string;
@@ -18,7 +19,7 @@ export interface FileRecord {
   s3Key: string;
   mimeType: string;
   sizeBytes: number;
-  status: 'PENDING' | 'PROCESSING' | 'READY' | 'EXPIRED';
+  status: FileStatus;
   uploadedAt: string;
   expiresAt: number; // Unix timestamp in seconds for DynamoDB TTL
   downloadCount: number;
@@ -38,22 +39,17 @@ export class AwsService {
   private readonly bucketName: string;
   private readonly tableName: string;
 
-  constructor(private readonly configService: ConfigService) {
-    const region = this.configService.get<string>('AWS_REGION', 'us-east-1');
-    this.bucketName = this.configService.get<string>('S3_BUCKET_NAME', 'clouddrop-storage-demo');
-    this.tableName = this.configService.get<string>('DYNAMODB_TABLE_NAME', 'CloudDropFiles');
+  constructor(private readonly appConfigService: AppConfigService) {
+    const region = this.appConfigService.awsRegion;
+    this.bucketName = this.appConfigService.s3BucketName;
+    this.tableName = this.appConfigService.dynamoDbTableName;
 
-    // On EC2, AWS SDK automatically retrieves IAM Instance Profile role credentials
-    // If local environment variables AWS_ACCESS_KEY_ID exist, it uses those
-    const accessKeyId = this.configService.get<string>('AWS_ACCESS_KEY_ID');
-    const secretAccessKey = this.configService.get<string>('AWS_SECRET_ACCESS_KEY');
-
+    // Use credentials from config if provided (e.g. local dev);
+    // Otherwise AWS SDK automatically retrieves IAM Instance Profile on EC2
+    const credentials = this.appConfigService.awsCredentials;
     const clientConfig: any = { region };
-    if (accessKeyId && secretAccessKey) {
-      clientConfig.credentials = {
-        accessKeyId,
-        secretAccessKey,
-      };
+    if (credentials) {
+      clientConfig.credentials = credentials;
     }
 
     this.s3Client = new S3Client(clientConfig);
@@ -78,7 +74,11 @@ export class AwsService {
    * Generates a pre-signed S3 PUT URL for secure, direct client-to-S3 uploads.
    * This offloads heavy file uploads from EC2, saving bandwidth and compute.
    */
-  async generatePresignedUploadUrl(s3Key: string, mimeType: string, expiresInSeconds = 900): Promise<string> {
+  async generatePresignedUploadUrl(
+    s3Key: string,
+    mimeType: string,
+    expiresInSeconds = FILE_CONSTANTS.PRESIGNED_UPLOAD_EXPIRY_SECONDS,
+  ): Promise<string> {
     const command = new PutObjectCommand({
       Bucket: this.bucketName,
       Key: s3Key,
@@ -90,7 +90,11 @@ export class AwsService {
   /**
    * Generates a pre-signed S3 GET URL for direct, secure file downloads.
    */
-  async generatePresignedDownloadUrl(s3Key: string, originalName: string, expiresInSeconds = 300): Promise<string> {
+  async generatePresignedDownloadUrl(
+    s3Key: string,
+    originalName: string,
+    expiresInSeconds = FILE_CONSTANTS.PRESIGNED_DOWNLOAD_EXPIRY_SECONDS,
+  ): Promise<string> {
     const command = new GetObjectCommand({
       Bucket: this.bucketName,
       Key: s3Key,
@@ -134,7 +138,6 @@ export class AwsService {
       }),
     );
     const items = (result.Items as FileRecord[]) || [];
-    // Sort descending by uploadedAt
     return items.sort((a, b) => new Date(b.uploadedAt).getTime() - new Date(a.uploadedAt).getTime());
   }
 
@@ -160,7 +163,7 @@ export class AwsService {
   /**
    * Mark file status in DynamoDB
    */
-  async updateFileStatus(fileId: string, status: 'PENDING' | 'PROCESSING' | 'READY' | 'EXPIRED'): Promise<void> {
+  async updateFileStatus(fileId: string, status: FileStatus): Promise<void> {
     await this.docClient.send(
       new UpdateCommand({
         TableName: this.tableName,
@@ -176,7 +179,6 @@ export class AwsService {
    * Delete file from S3 and DynamoDB
    */
   async deleteFile(fileId: string, s3Key: string): Promise<void> {
-    // 1. Delete from S3
     await this.s3Client.send(
       new DeleteObjectCommand({
         Bucket: this.bucketName,
@@ -184,7 +186,6 @@ export class AwsService {
       }),
     );
 
-    // 2. Delete from DynamoDB
     await this.docClient.send(
       new DeleteCommand({
         TableName: this.tableName,
@@ -193,4 +194,3 @@ export class AwsService {
     );
   }
 }
-

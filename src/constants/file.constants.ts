@@ -1,0 +1,23 @@
+export enum FileStatus {
+  PENDING = 'PENDING',
+  PROCESSING = 'PROCESSING',
+  READY = 'READY',
+  EXPIRED = 'EXPIRED',
+}
+
+export const FILE_CONSTANTS = {
+  DEFAULT_EXPIRY_HOURS: 24,
+  MIN_EXPIRY_HOURS: 1,
+  MAX_EXPIRY_HOURS: 168, // 7 days
+  PRESIGNED_UPLOAD_EXPIRY_SECONDS: 900, // 15 minutes
+  PRESIGNED_DOWNLOAD_EXPIRY_SECONDS: 300, // 5 minutes
+  MAX_FILE_SIZE_BYTES: 5 * 1024 * 1024 * 1024, // 5 GB
+  S3_UPLOAD_PREFIX: 'uploads',
+} as const;
+
+export const APP_CONSTANTS = {
+  DEFAULT_PORT: 3000,
+  DEFAULT_AWS_REGION: 'us-east-1',
+  DEFAULT_S3_BUCKET: 'clouddrop-storage-demo',
+  DEFAULT_DYNAMODB_TABLE: 'CloudDropFiles',
+} as const;
