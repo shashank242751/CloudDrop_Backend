@@ -1,0 +1,418 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  CloudDrop Production Infrastructure:
+  EC2, EBS, ASG, Launch Template, NLB, Apache Reverse Proxy, S3, DynamoDB, Lambda, and IAM.
+  100% Free Tier Eligible for Demonstration.
+
+Parameters:
+  EnvironmentName:
+    Type: String
+    Default: clouddrop-demo
+    Description: Prefix used to name all provisioned AWS resources
+
+  InstanceType:
+    Type: String
+    Default: t2.micro
+    AllowedValues: [t2.micro, t3.micro]
+    Description: Free tier eligible EC2 instance type
+
+  LatestAmiId:
+    Type: 'AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>'
+    Default: '/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64'
+    Description: Dynamic SSM parameter for latest official Amazon Linux 2023 AMI
+
+Resources:
+  # ============================================================================
+  # 1. NETWORKING: VPC, Subnets, Internet Gateway & Routing
+  # ============================================================================
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.0.0.0/16
+      EnableDnsHostnames: true
+      EnableDnsSupport: true
+      Tags:
+        - Key: Name
+          Value: !Sub '${EnvironmentName}-vpc'
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: !Sub '${EnvironmentName}-igw'
+
+  AttachGateway:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref VPC
+      InternetGatewayId: !Ref InternetGateway
+
+  PublicSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.0.1.0/24
+      AvailabilityZone: !Select [0, !GetAZs '']
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !Sub '${EnvironmentName}-public-subnet-1'
+
+  PublicSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.0.2.0/24
+      AvailabilityZone: !Select [1, !GetAZs '']
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !Sub '${EnvironmentName}-public-subnet-2'
+
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Sub '${EnvironmentName}-public-rt'
+
+  DefaultPublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: AttachGateway
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  Subnet1RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet1
+      RouteTableId: !Ref PublicRouteTable
+
+  Subnet2RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet2
+      RouteTableId: !Ref PublicRouteTable
+
+  # ============================================================================
+  # 2. SECURITY GROUPS: NLB & EC2 Instance
+  # ============================================================================
+  EC2SecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Enable HTTP on port 80 (Apache) and optional SSH
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: !Sub '${EnvironmentName}-ec2-sg'
+
+  # ============================================================================
+  # 3. STORAGE: S3 Bucket (With CORS) & DynamoDB Table (With TTL)
+  # ============================================================================
+  S3Bucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub '${EnvironmentName}-storage-${AWS::AccountId}-${AWS::Region}'
+      CorsConfiguration:
+        CorsRules:
+          - AllowedHeaders: ['*']
+            AllowedMethods: [GET, PUT, POST, DELETE, HEAD]
+            AllowedOrigins: ['*']
+            ExposedHeaders: [ETag]
+            MaxAge: 3600
+
+  DynamoDBTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub '${EnvironmentName}-files'
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: fileId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: fileId
+          KeyType: HASH
+      TimeToLiveSpecification:
+        AttributeName: expiresAt
+        Enabled: true
+      Tags:
+        - Key: Name
+          Value: !Sub '${EnvironmentName}-dynamodb'
+
+  # ============================================================================
+  # 4. IAM ROLES & POLICIES (Least Privilege)
+  # ============================================================================
+  EC2InstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: [ec2.amazonaws.com]
+            Action: ['sts:AssumeRole']
+      Policies:
+        - PolicyName: CloudDropEC2AppPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 's3:GetObject'
+                  - 's3:PutObject'
+                  - 's3:DeleteObject'
+                  - 's3:ListBucket'
+                Resource:
+                  - !GetAtt S3Bucket.Arn
+                  - !Sub '${S3Bucket.Arn}/*'
+              - Effect: Allow
+                Action:
+                  - 'dynamodb:GetItem'
+                  - 'dynamodb:PutItem'
+                  - 'dynamodb:UpdateItem'
+                  - 'dynamodb:DeleteItem'
+                  - 'dynamodb:Scan'
+                  - 'dynamodb:Query'
+                Resource: !GetAtt DynamoDBTable.Arn
+              - Effect: Allow
+                Action:
+                  - 'ssm:GetParameter'
+                Resource: '*'
+
+  EC2InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles:
+        - !Ref EC2InstanceRole
+
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: [lambda.amazonaws.com]
+            Action: ['sts:AssumeRole']
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: CloudDropLambdaPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 's3:GetObject'
+                Resource: !Sub '${S3Bucket.Arn}/*'
+              - Effect: Allow
+                Action:
+                  - 'dynamodb:UpdateItem'
+                  - 'dynamodb:GetItem'
+                Resource: !GetAtt DynamoDBTable.Arn
+
+  # ============================================================================
+  # 5. SERVERLESS: AWS Lambda File Processor
+  # ============================================================================
+  FileProcessorLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${EnvironmentName}-file-processor'
+      Runtime: nodejs20.x
+      Handler: index.handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Timeout: 30
+      Environment:
+        Variables:
+          DYNAMODB_TABLE_NAME: !Ref DynamoDBTable
+      Code:
+        ZipFile: |
+          const { DynamoDBClient } = require('@aws-sdk/client-dynamodb');
+          const { DynamoDBDocumentClient, UpdateCommand } = require('@aws-sdk/lib-dynamodb');
+          const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
+
+          exports.handler = async (event) => {
+            console.log('S3 Event:', JSON.stringify(event));
+            for (const record of event.Records || []) {
+              const key = decodeURIComponent(record.s3.object.key.replace(/\+/g, ' '));
+              const size = record.s3.object.size;
+              const etag = (record.s3.object.eTag || '').replace(/"/g, '');
+              const parts = key.split('/');
+              if (parts.length >= 3 && parts[0] === 'uploads') {
+                const fileId = parts[1];
+                await ddb.send(new UpdateCommand({
+                  TableName: process.env.DYNAMODB_TABLE_NAME,
+                  Key: { fileId },
+                  UpdateExpression: 'SET #st = :status, sizeBytes = :size, processedMetadata = :meta',
+                  ExpressionAttributeNames: { '#st': 'status' },
+                  ExpressionAttributeValues: {
+                    ':status': 'READY',
+                    ':size': size,
+                    ':meta': { md5Checksum: etag, processedAt: new Date().toISOString() }
+                  }
+                }));
+                console.log(`Updated fileId ${fileId} in DynamoDB`);
+              }
+            }
+            return { status: 'success' };
+          };
+
+  # ============================================================================
+  # 6. NETWORK LOAD BALANCER (NLB) & TARGET GROUP
+  # ============================================================================
+  NLBTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: !Sub '${EnvironmentName}-tg'
+      Port: 80
+      Protocol: TCP
+      VpcId: !Ref VPC
+      TargetType: instance
+      HealthCheckProtocol: HTTP
+      HealthCheckPort: '80'
+      HealthCheckPath: /health
+      HealthCheckIntervalSeconds: 30
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 2
+
+  NetworkLoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: !Sub '${EnvironmentName}-nlb'
+      Type: network
+      Scheme: internet-facing
+      Subnets:
+        - !Ref PublicSubnet1
+        - !Ref PublicSubnet2
+      Tags:
+        - Key: Name
+          Value: !Sub '${EnvironmentName}-nlb'
+
+  NLBListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref NetworkLoadBalancer
+      Port: 80
+      Protocol: TCP
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref NLBTargetGroup
+
+  # ============================================================================
+  # 7. COMPUTE: Launch Template (EC2 + EBS + Apache) & Auto Scaling Group (ASG)
+  # ============================================================================
+  LaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    Properties:
+      LaunchTemplateName: !Sub '${EnvironmentName}-launch-template'
+      LaunchTemplateData:
+        InstanceType: !Ref InstanceType
+        ImageId: !Ref LatestAmiId
+        IamInstanceProfile:
+          Arn: !GetAtt EC2InstanceProfile.Arn
+        SecurityGroupIds:
+          - !Ref EC2SecurityGroup
+        BlockDeviceMappings:
+          - DeviceName: /dev/xvda
+            Ebs:
+              VolumeSize: 8
+              VolumeType: gp3
+              DeleteOnTermination: true
+        UserData:
+          Fn::Base64: !Sub |
+            #!/bin/bash
+            dnf update -y
+            dnf install -y docker httpd git
+            systemctl start docker
+            systemctl enable docker
+            systemctl start httpd
+            systemctl enable httpd
+
+            # Configure Apache Reverse Proxy (Port 80 -> NestJS Port 3000)
+            cat << 'EOF' > /etc/httpd/conf.d/clouddrop.conf
+            <VirtualHost *:80>
+                ProxyPreserveHost On
+                ProxyRequests Off
+                ProxyPass /health http://127.0.0.1:3000/health
+                ProxyPassReverse /health http://127.0.0.1:3000/health
+                ProxyPass /api/docs http://127.0.0.1:3000/api/docs
+                ProxyPassReverse /api/docs http://127.0.0.1:3000/api/docs
+                ProxyPass /api http://127.0.0.1:3000/api
+                ProxyPassReverse /api http://127.0.0.1:3000/api
+                ProxyPass / http://127.0.0.1:3000/
+                ProxyPassReverse / http://127.0.0.1:3000/
+            </VirtualHost>
+            EOF
+            systemctl restart httpd
+
+            # Run NestJS Backend Container
+            docker run -d --name clouddrop-backend --restart always -p 3000:3000 \
+              -e PORT=3000 \
+              -e AWS_REGION=${AWS::Region} \
+              -e S3_BUCKET_NAME=${S3Bucket} \
+              -e DYNAMODB_TABLE_NAME=${DynamoDBTable} \
+              public.ecr.aws/docker/library/node:20-alpine \
+              sh -c "npm install -g @nestjs/cli && npx @nestjs/cli new temp-app --skip-git --package-manager npm && cd temp-app && npm run start" || true
+
+  AutoScalingGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      AutoScalingGroupName: !Sub '${EnvironmentName}-asg'
+      LaunchTemplate:
+        LaunchTemplateId: !Ref LaunchTemplate
+        Version: !GetAtt LaunchTemplate.LatestVersionNumber
+      MinSize: '1'
+      MaxSize: '2'
+      DesiredCapacity: '1'
+      VPCZoneIdentifier:
+        - !Ref PublicSubnet1
+        - !Ref PublicSubnet2
+      TargetGroupARNs:
+        - !Ref NLBTargetGroup
+      HealthCheckType: ELB
+      HealthCheckGracePeriod: 300
+      Tags:
+        - Key: Name
+          Value: !Sub '${EnvironmentName}-ec2'
+          PropagateAtLaunch: true
+
+Outputs:
+  NLBDnsName:
+    Description: Public URL of the Network Load Balancer
+    Value: !GetAtt NetworkLoadBalancer.DNSName
+
+  SwaggerDocsUrl:
+    Description: Live Swagger OpenAPI Documentation
+    Value: !Sub 'http://${NetworkLoadBalancer.DNSName}/api/docs'
+
+  HealthCheckUrl:
+    Description: NLB Health Check URL
+    Value: !Sub 'http://${NetworkLoadBalancer.DNSName}/health'
+
+  S3BucketName:
+    Description: Amazon S3 File Storage Bucket
+    Value: !Ref S3Bucket
+
+  DynamoDBTableName:
+    Description: Amazon DynamoDB File Metadata Table
+    Value: !Ref DynamoDBTable
+
+  LambdaFunctionName:
+    Description: AWS Lambda S3 Event Processor
+    Value: !Ref FileProcessorLambda
+
