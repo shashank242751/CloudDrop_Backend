@@ -69,3 +69,4 @@ jobs:
           else
             echo "Skipping AWS validation: AWS secrets not yet configured."
           fi
+

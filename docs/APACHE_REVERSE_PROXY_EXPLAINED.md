@@ -118,3 +118,4 @@ Students and engineers frequently confuse these three components. Here is their 
 5. **Response Return Path**:
    NestJS sends JSON back to Apache -> Apache sends response back through NLB -> NLB returns response to the Client browser.
    **At no point did the client ever see or touch port 3000!**
+

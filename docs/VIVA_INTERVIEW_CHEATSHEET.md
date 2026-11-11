@@ -73,3 +73,4 @@ Use this document to prepare for technical interviews, viva defenses, or project
 >   - NLB, Listener on Port 80, and Target Group with HTTP health check.
 >   - EC2 Launch Template with EBS gp3 volume and User-Data bootstrap.
 >   - Auto Scaling Group (Min 1, Max 2, Desired 1).
+
